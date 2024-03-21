@@ -1,0 +1,41 @@
+/****** Object:  Table [DB_TOOLS].[IndexInfo]    Script Date: 3/21/2024 11:07:50 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [DB_TOOLS].[IndexInfo](
+	[ID] [int] IDENTITY(1,1) NOT NULL,
+	[DatabaseName] [nvarchar](128) NULL,
+	[SchemaName] [nvarchar](128) NULL,
+	[TableName] [nvarchar](128) NULL,
+	[IndexName] [nvarchar](128) NULL,
+	[PreIndexSizeMB] [decimal](10, 2) NULL,
+	[PostIndexSizeMB] [decimal](10, 2) NULL,
+	[PrePercentFragmented] [float] NULL,
+	[PostPercentFragmented] [float] NULL,
+	[FragmentationType] [nvarchar](50) NULL,
+	[DateRepaired] [datetime] NULL,
+	[DateFound] [datetime] NULL,
+PRIMARY KEY CLUSTERED 
+(
+	[ID] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+) ON [PRIMARY]
+GO
+
+
+CREATE TABLE [DB_TOOLS].[Query_History](
+	[sql_handle] [varbinary](64) NULL,
+	[plan_handle] [varbinary](64) NULL,
+	[statement_start_offset] [int] NULL,
+	[statement_end_offset] [int] NULL,
+	[sql_text] [text] NULL,
+	[start_time] [datetime] NULL,
+	[end_time] [datetime] NULL,
+	[elapsed_time_minutes] [float] NULL,
+	[total_logical_reads] [int] NULL,
+	[total_physical_reads] [int] NULL
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
+GO
