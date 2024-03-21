@@ -1,0 +1,143 @@
+/****** Object:  StoredProcedure [DB_TOOLS].[IndexRepair]    Script Date: 2/23/2024 3:59:35 PM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO 
+CREATE PROCEDURE [DB_TOOLS].[IndexRepair]
+    /*----------------------------------------------------------------------------------------
+     Stored Procedure: [IndexRepair]
+     Author: [Don Brasil Gaspar]
+     Date Created: [02/23/2024]
+     Description: Loop and iterate through all databases automatically healing and logging indexes in need of repair
+     ----------------------------------------------------------------------------------------*/
+    -- Notes
+    /*----------------------------------------------------------------------------------------
+     - We're ignoring smaller indexes < 50 MB but anything above 5 GB
+	 - Enhanced to add a start date and reduced to target a single database for mobility
+     ----------------------------------------------------------------------------------------*/
+    AS BEGIN -- Declare variables for database and table names
+
+DECLARE @DBName NVARCHAR(128) = 'inquarry-datadev',
+    @SQL NVARCHAR(MAX) 
+
+-- Generate dynamic SQL to fetch index details and insert into the table
+SET @SQL = '
+            USE [' + @DBName + '];
+            INSERT INTO DB_TOOLS.IndexInfo  (DatabaseName, SchemaName, TableName, IndexName, PreIndexSizeMB, PrePercentFragmented, FragmentationType, DateFound)
+            SELECT * FROM 
+			(SELECT
+                ''' + @DBName + ''' AS DatabaseName, -- Fix
+                s.name AS SchemaName,
+                t.name AS TableName,
+                ix.name AS IndexName,
+                SUM(ps.[used_page_count]) * 8 / 1024.0 AS IndexSizeMB,
+                sddips.avg_fragmentation_in_percent,
+				case
+					when sddips.avg_fragmentation_in_percent < 30 then ''Reorganize''
+					else ''Rebuild''
+					end as FragmentationType,
+					getdate() as DateFound
+            FROM 
+			sys.dm_db_index_physical_stats (DB_ID(), NULL, NULL, NULL, NULL) AS sddips
+            INNER JOIN sys.indexes AS ix ON sddips.[object_id] = ix.[object_id] AND sddips.index_id = ix.index_id
+            INNER JOIN sys.tables AS t ON t.[object_id] = ix.[object_id]
+            INNER JOIN sys.schemas AS s ON t.schema_id = s.schema_id
+			INNER JOIN sys.dm_db_partition_stats AS ps ON sddips.[object_id] = ps.[object_id] AND sddips.index_id = ps.index_id
+
+			where ix.name is not null
+
+            GROUP BY 
+			s.name
+			, t.name
+			, ix.name
+			, sddips.avg_fragmentation_in_percent) as a
+			where 
+			avg_fragmentation_in_percent > 10
+			and IndexSizeMB > 50' 
+EXEC sp_executesql @SQL 
+			
+-- Loop through indexes
+DECLARE cleanIndexes CURSOR FAST_FORWARD FOR
+SELECT DatabaseName,
+    TableName,
+    IndexName,
+    FragmentationType
+FROM DB_TOOLS.IndexInfo
+WHERE DateRepaired IS NULL
+    and PreIndexSizeMB < 5000 -- 5 GB -- 02/26/2024 Don Updated from PrePrePercentFragmented 
+    OPEN cleanIndexes;
+DECLARE @DatabaseName NVARCHAR(100),
+    @IndexName NVARCHAR(100),
+    @FragmentationType NVARCHAR(50),
+    @TableName NVARCHAR(100);
+FETCH NEXT
+FROM cleanIndexes INTO @DatabaseName,
+    @TableName,
+    @IndexName,
+    @FragmentationType;
+WHILE @@FETCH_STATUS = 0 BEGIN IF @FragmentationType = 'REBUILD' BEGIN
+SET @SQL = 'USE [' + @DatabaseName + ']; ALTER INDEX [' + @IndexName + '] ON [' + @TableName + '] REBUILD;';
+END
+ELSE BEGIN
+SET @SQL = 'USE [' + @DatabaseName + ']; ALTER INDEX [' + @IndexName + '] ON [' + @TableName + '] REORGANIZE;';
+END EXEC sp_executesql @SQL;
+FETCH NEXT
+FROM cleanIndexes INTO @DatabaseName,
+    @TableName,
+    @IndexName,
+    @FragmentationType;
+END CLOSE cleanIndexes;
+DEALLOCATE cleanIndexes;
+
+-- Post Results Collection
+-- Gather post results into temp table and update main table
+CREATE TABLE #postResults (
+DatabaseName NVARCHAR(128),
+SchemaName NVARCHAR(128),
+TableName NVARCHAR(128),
+IndexName NVARCHAR(128),
+PostIndexSizeMB DECIMAL(10, 2),
+PostPercentFragmented FLOAT
+)
+SET @SQL = '
+            USE [' + @DBName + '];
+            INSERT #postResults  (DatabaseName, SchemaName, TableName, IndexName, PostIndexSizeMB, PostPercentFragmented)
+            SELECT * FROM 
+			(SELECT
+                ''' + @DBName + ''' AS DatabaseName, -- Fix
+                s.name AS SchemaName,
+                t.name AS TableName,
+                ix.name AS IndexName,
+                SUM(ps.[used_page_count]) * 8 / 1024.0 AS IndexSizeMB,
+                sddips.avg_fragmentation_in_percent
+
+            FROM 
+			sys.dm_db_index_physical_stats (DB_ID(), NULL, NULL, NULL, NULL) AS sddips
+            INNER JOIN sys.indexes AS ix ON sddips.[object_id] = ix.[object_id] AND sddips.index_id = ix.index_id
+            INNER JOIN sys.tables AS t ON t.[object_id] = ix.[object_id]
+            INNER JOIN sys.schemas AS s ON t.schema_id = s.schema_id
+			INNER JOIN sys.dm_db_partition_stats AS ps ON sddips.[object_id] = ps.[object_id] AND sddips.index_id = ps.index_id
+
+            GROUP BY 
+			s.name
+			, t.name
+			, ix.name
+			, sddips.avg_fragmentation_in_percent) as a
+			where 
+			IndexName in (select IndexName from db_tools.indexinfo )
+			and tableName in (select tableName from db_tools.indexinfo )' EXEC sp_executesql @SQL
+UPDATE DB_Tools.IndexInfo
+SET PostIndexSizeMB = p.PostIndexSizeMB,
+    PostPercentFragmented = p.PostPercentFragmented,
+    DateRepaired = getdate()
+FROM DB_Tools.IndexInfo i
+    JOIN #postResults p ON i.DatabaseName = p.DatabaseName
+    AND i.SchemaName = p.SchemaName
+    AND i.TableName = p.TableName
+    AND i.IndexName = p.IndexName
+WHERE i.DateRepaired IS NULL
+    and i.schemaName = 'dbo'
+    and i.DatabaseName = @DBName
+    and p.PostPercentFragmented is not null -- Drop the table when done
+    DROP TABLE #postResults
+END
