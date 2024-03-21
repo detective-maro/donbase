@@ -1,0 +1,60 @@
+/****** Object:  StoredProcedure [DB_TOOLS].[Find_Query_History]    Script Date: 3/21/2024 10:58:09 AM ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER PROCEDURE [DB_TOOLS].[Find_Query_History]
+	/*----------------------------------------------------------------------------------------
+    Procedure: [Find_Query_History]
+    Author: [Don Brasil Gaspar]
+    Date Created: [11/07/2023]
+    Description: Finds all queries and performance metrics
+----------------------------------------------------------------------------------------*/
+	@startDate DATE
+	,@endDate DATE
+AS
+BEGIN
+	MERGE DB_TOOLS.Query_History AS target
+	USING (
+		SELECT q.sql_handle
+			,q.plan_handle
+			,q.[statement_start_offset]
+			,q.[statement_end_offset]
+			,t.TEXT AS sql_text
+			,q.creation_time AS start_time
+			,q.last_execution_time AS end_time
+			,(q.total_elapsed_time / 1000000.0) / 60 elapsed_time_minutes
+			,q.total_logical_reads
+			,q.total_physical_reads
+		FROM sys.dm_exec_query_stats AS q
+		CROSS APPLY sys.dm_exec_sql_text(q.sql_handle) AS t
+		WHERE (
+				cast(creation_time AS DATE) >= isnull(@startDate, cast(getdate() AS DATE))
+				OR (
+					cast(creation_time AS DATE) BETWEEN isnull(@startDate, cast(getdate() AS DATE))
+						AND isnull(@endDate, cast(getdate() AS DATE))
+					)
+				)
+			AND upper(t.TEXT) NOT LIKE '%CREATE%' -- Igore portion of replicated objects
+		) AS source
+		ON target.sql_handle = source.sql_handle
+			AND target.plan_handle = source.plan_handle
+			AND target.[statement_start_offset] = source.[statement_start_offset]
+			AND target.[statement_end_offset] = source.[statement_end_offset]
+			-- When matched, essentially ignore as this should never change
+	WHEN NOT MATCHED
+		THEN
+			INSERT
+			VALUES (
+				source.sql_handle
+				,source.plan_handle
+				,source.[statement_start_offset]
+				,source.[statement_end_offset]
+				,source.sql_text
+				,source.start_time
+				,source.end_time
+				,source.elapsed_time_minutes
+				,source.total_logical_reads
+				,source.total_physical_reads
+				);
+END
